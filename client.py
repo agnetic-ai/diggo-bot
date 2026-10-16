@@ -99,7 +99,7 @@ class DiggoClient:
                     session_name = candidate
                     break
 
-        if not session_name or session_name == "ombengz":
+        if not session_name:
             return False
 
         session_path = os.path.join(session_dir, f"{session_name}.session")
