@@ -12,8 +12,10 @@ Strictly executes only specified task categories:
 import time
 import uuid
 import asyncio
+import base64
 import httpx
 from datetime import datetime, timezone
+from urllib.parse import parse_qs
 
 from config import (
     BASE_URL,
@@ -222,8 +224,19 @@ class DiggoClient:
     # --------------------------------------------------------------------------
     # 5. Tonton Iklan (Adsgram)
     # --------------------------------------------------------------------------
+    def _build_data_check_string(self) -> str:
+        """Builds base64url-encoded data_check_string for Adsgram verification."""
+        params = parse_qs(self.init_data)
+        items = []
+        for k, v in params.items():
+            if k not in ["hash", "signature"]:
+                items.append(f"{k}={v[0]}")
+        items.sort()
+        dcs = "\n".join(items)
+        return base64.urlsafe_b64encode(dcs.encode("utf-8")).decode("utf-8").rstrip("=")
+
     async def claim_watch_ads(self, client: httpx.AsyncClient) -> None:
-        """Simulates watching Adsgram ads up to daily quota limit."""
+        """Watches Adsgram ads, triggers real tracking events, and claims DIGGO rewards."""
         ad_task = self.state.get("tasks", {}).get("ad", {})
         if not ad_task or ad_task.get("claimed") or not ad_task.get("enabled", True):
             return
@@ -237,10 +250,18 @@ class DiggoClient:
         remaining_slots = quota_total - quota_used
         print(f"[{self.account_name}] Memproses tonton iklan ({remaining_slots} slot tersisa)...")
 
+        params = parse_qs(self.init_data)
+        user_id = str(self.player.get("id") or "")
+        sig = params.get("signature", [""])[0]
+        dcs_b64 = self._build_data_check_string()
+        block_id = str(ad_task.get("blockId") or "54249")
+
         for slot in range(remaining_slots):
             try:
+                # 1. Inisiasi sesi iklan ke DIGGO backend
                 r_start = await client.post(f"{BASE_URL}/api/adsgram/start", headers=self._get_headers(), json={})
                 if r_start.status_code != 200:
+                    print(f"[{self.account_name}] Gagal start iklan #{slot+1}: HTTP {r_start.status_code}")
                     break
 
                 start_res = r_start.json()
@@ -258,26 +279,75 @@ class DiggoClient:
                         print(f"[{self.account_name}] Iklan #{slot+1} Langsung Diklaim! (+10 DIGGO)")
                         continue
 
-                if attempt_id and not start_res.get("waiting"):
-                    print(f"[{self.account_name}] Menonton iklan #{slot+1} (5s)...")
-                    await asyncio.sleep(5)
-                    r_comp = await client.post(
-                        f"{BASE_URL}/api/adsgram/complete",
-                        headers=self._get_headers(),
-                        json={"attemptId": attempt_id}
-                    )
-                    if r_comp.status_code == 200:
-                        self.state = r_comp.json().get("state", self.state)
-                        r_claim = await client.post(
-                            f"{BASE_URL}/api/tasks/claim",
-                            headers=self._get_headers(idempotency=True),
-                            json={"taskId": "ad"}
-                        )
-                        if r_claim.status_code == 200:
-                            self.state = r_claim.json().get("state", self.state)
-                            print(f"[{self.account_name}] Iklan #{slot+1} Selesai & Diklaim! (+10 DIGGO)")
-                        else:
-                            print(f"[{self.account_name}] Iklan #{slot+1} Selesai diputar.")
+                # 2. Request rewarded ad payload dari Adsgram Network
+                adv_params = {
+                    "envType": "telegram",
+                    "blockId": block_id,
+                    "platform": "Linux aarch64",
+                    "language": "en",
+                    "top_domain": "app.diggocoin.com",
+                    "signature": sig,
+                    "data_check_string": dcs_b64,
+                    "tg_id": user_id,
+                    "tg_platform": "android",
+                    "tma_version": "9.6"
+                }
+                ads_headers = {
+                    "User-Agent": HEADERS_BASE["User-Agent"],
+                    "Origin": "https://app.diggocoin.com",
+                    "Referer": "https://app.diggocoin.com/"
+                }
+
+                r_adv = await client.get("https://api.adsgram.ai/adv", params=adv_params, headers=ads_headers)
+                if r_adv.status_code != 200:
+                    print(f"[{self.account_name}] Gagal memuat iklan dari Adsgram: HTTP {r_adv.status_code}")
+                    break
+
+                adv_json = r_adv.json()
+                trackings = adv_json.get("banner", {}).get("trackings", [])
+                track_map = {t["name"]: t["value"] for t in trackings}
+
+                # 3. Trigger tracking render & show
+                if "render" in track_map:
+                    await client.get(track_map["render"], headers=ads_headers)
+                if "show" in track_map:
+                    await client.get(track_map["show"], headers=ads_headers)
+
+                # 4. Putar video iklan (16 detik)
+                print(f"[{self.account_name}] Menonton video iklan #{slot+1} (16 detik)...")
+                await asyncio.sleep(16)
+
+                # 5. Trigger tracking reward ke Adsgram (memicu webhook callback server Adsgram ke DIGGO)
+                if "reward" in track_map:
+                    await client.get(track_map["reward"], headers=ads_headers)
+
+                # 6. Kirim sinyal complete ke DIGGO
+                await client.post(
+                    f"{BASE_URL}/api/adsgram/complete",
+                    headers=self._get_headers(),
+                    json={"attemptId": attempt_id}
+                )
+
+                # 7. Polling status & klaim reward ke DIGGO
+                claimed = False
+                for _ in range(5):
+                    await asyncio.sleep(2)
+                    r_st = await client.get(f"{BASE_URL}/api/state", headers=self._get_headers())
+                    if r_st.status_code == 200:
+                        cur_ad = r_st.json().get("state", {}).get("tasks", {}).get("ad", {})
+                        if cur_ad.get("progress", 0) >= cur_ad.get("total", 1) and not cur_ad.get("claimed"):
+                            r_claim = await client.post(
+                                f"{BASE_URL}/api/tasks/claim",
+                                headers=self._get_headers(idempotency=True),
+                                json={"taskId": "ad"}
+                            )
+                            if r_claim.status_code == 200:
+                                self.state = r_claim.json().get("state", self.state)
+                                print(f"[{self.account_name}] Iklan #{slot+1} Sukses Diklaim! (+10 DIGGO)")
+                                claimed = True
+                                break
+                if not claimed:
+                    print(f"[{self.account_name}] Iklan #{slot+1} Selesai diputar.")
             except Exception as e:
                 print(f"[{self.account_name}] Error proses iklan #{slot+1}: {e}")
                 break
