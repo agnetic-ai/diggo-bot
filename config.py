@@ -79,19 +79,22 @@ def clean_init_data_string(raw_text: str) -> str:
     data = raw_text.strip().strip('"').strip("'")
 
     # Jika user menempelkan URL lengkap (misal https://diggo.linkpc.net/#tgWebAppData=...)
-    if "#" in data or "tgWebAppData=" in data:
-        try:
-            frag = urlsplit(data).fragment if "#" in data else data
-            parsed = parse_qs(frag)
-            if "tgWebAppData" in parsed:
-                return parsed["tgWebAppData"][0]
-        except Exception:
-            pass
+    if "#" in data:
+        data = data.split("#", 1)[1]
 
     if "tgWebAppData=" in data:
         match = re.search(r"tgWebAppData=([^&#]+)", data)
         if match:
-            return unquote(match.group(1))
+            data = match.group(1)
+
+    # Jika string ter-encode URL (%3D dan %26)
+    if ("%3D" in data or "%3d" in data) and ("%26" in data or "%26" in data.lower()):
+        data = unquote(data)
+
+    # Hapus parameter client-side Telegram WebApp yang bukan bagian dari validasi initData
+    for param in ["&tgWebAppVersion=", "&tgWebAppPlatform=", "&tgWebAppThemeParams="]:
+        if param in data:
+            data = data.split(param)[0]
 
     return data
 
