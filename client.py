@@ -1,18 +1,27 @@
 """
 DIGGO Miner Client API Implementation
-Handles Telegram WebApp Authentication, Tasks, Streaks, and Mining Operations.
+Strictly executes only specified task categories:
+1. Daily Check-in
+2. Daily Streak
+3. Play Game
+4. Self-Reported Social Tasks
+5. Watch Ads (Adsgram)
+6. 8-Hour Mining Harvest
 """
 
 import time
 import uuid
+import asyncio
 import httpx
 from datetime import datetime, timezone
 
 from config import (
     BASE_URL,
-    AUTO_DAILY_CHECKIN,
-    AUTO_DAILY_STREAK,
-    AUTO_TASKS
+    TASK_DAILY_CHECKIN,
+    TASK_DAILY_STREAK,
+    TASK_PLAY_GAME,
+    TASK_SELF_REPORT_SOCIAL,
+    TASK_WATCH_ADS
 )
 
 HEADERS_BASE = {
@@ -55,7 +64,7 @@ class DiggoClient:
         """Authenticates with DIGGO backend using initData."""
         url = f"{BASE_URL}/api/auth/telegram"
         payload = {"initData": self.init_data}
-        
+
         try:
             resp = await client.post(url, headers=self._get_headers(with_auth=False), json=payload)
             if resp.status_code == 200:
@@ -68,7 +77,7 @@ class DiggoClient:
                 print(f"[{self.account_name}] Login failed HTTP {resp.status_code}: {resp.text[:150]}")
                 return False
         except httpx.ConnectTimeout:
-            print(f"[{self.account_name}] Connection timed out to {BASE_URL}. Target server may be restarting.")
+            print(f"[{self.account_name}] Connection timed out to {BASE_URL}.")
             return False
         except Exception as e:
             print(f"[{self.account_name}] Login error: {e}")
@@ -88,11 +97,14 @@ class DiggoClient:
             print(f"[{self.account_name}] State refresh error: {e}")
         return self.state
 
+    # --------------------------------------------------------------------------
+    # 1. Daily Check-in
+    # --------------------------------------------------------------------------
     async def claim_daily_checkin(self, client: httpx.AsyncClient) -> bool:
         """Claims daily checkin task."""
         tasks = self.state.get("tasks", {})
         checkin_task = tasks.get("checkin", {})
-        if checkin_task.get("claimed"):
+        if not checkin_task or checkin_task.get("claimed"):
             return False
 
         url = f"{BASE_URL}/api/tasks/claim"
@@ -109,6 +121,9 @@ class DiggoClient:
             print(f"[{self.account_name}] Daily Check-in error: {e}")
         return False
 
+    # --------------------------------------------------------------------------
+    # 2. Daily Streak (Day 1 - 7)
+    # --------------------------------------------------------------------------
     async def claim_daily_streak(self, client: httpx.AsyncClient) -> bool:
         """Claims available daily streak reward (Day 1 - 7)."""
         day_rewards = self.state.get("dayRewards", [])
@@ -131,61 +146,48 @@ class DiggoClient:
                     print(f"[{self.account_name}] Streak claim Day {day_num} error: {e}")
         return claimed_any
 
-    async def claim_all_available_tasks(self, client: httpx.AsyncClient) -> None:
-        """
-        Comprehensive Task Completer & Claimer:
-        1. Auto-claims completed progress tasks (e.g. 'play', 'checkin')
-        2. Verifies & claims Telegram Community channel task ('telegram')
-        3. Starts, waits, confirms, and claims self-reported social tasks ('x_follow', 'x_post', 'community_react')
-        """
+    # --------------------------------------------------------------------------
+    # 3. Play Game Task
+    # --------------------------------------------------------------------------
+    async def claim_play_game(self, client: httpx.AsyncClient) -> bool:
+        """Claims 'play' game task when progress >= total."""
+        play_task = self.state.get("tasks", {}).get("play", {})
+        if not play_task or play_task.get("claimed") or not play_task.get("enabled", True):
+            return False
+
+        prog = play_task.get("progress", 0)
+        total = play_task.get("total", 1)
+        if prog >= total:
+            try:
+                resp = await client.post(
+                    f"{BASE_URL}/api/tasks/claim",
+                    headers=self._get_headers(idempotency=True),
+                    json={"taskId": "play"}
+                )
+                if resp.status_code == 200:
+                    self.state = resp.json().get("state", self.state)
+                    reward = play_task.get("reward", 10)
+                    print(f"[{self.account_name}] Play Game Task Claimed! (+{reward} DIGGO)")
+                    return True
+            except Exception as e:
+                print(f"[{self.account_name}] Play Game Task claim error: {e}")
+        return False
+
+    # --------------------------------------------------------------------------
+    # 4. Self-Reported Social Tasks
+    # --------------------------------------------------------------------------
+    async def claim_self_reported_social(self, client: httpx.AsyncClient) -> None:
+        """Starts, waits, confirms, and claims self-reported social tasks (x_follow, x_post, community_react)."""
         tasks = self.state.get("tasks", {})
 
-        # 1. Claim any task that has already fulfilled progress (e.g. 'play', 'checkin')
         for task_id, task_info in tasks.items():
-            if not task_info or task_info.get("claimed") or not task_info.get("enabled", True):
-                continue
-
-            prog = task_info.get("progress", 0)
-            total = task_info.get("total", 1)
-            verification = task_info.get("verification")
-
-            # Simple progress ready task
-            if prog >= total and verification != "self_reported":
-                try:
-                    resp = await client.post(
-                        f"{BASE_URL}/api/tasks/claim",
-                        headers=self._get_headers(idempotency=True),
-                        json={"taskId": task_id}
-                    )
-                    if resp.status_code == 200:
-                        self.state = resp.json().get("state", self.state)
-                        reward = task_info.get("reward", 10)
-                        print(f"[{self.account_name}] Task '{task_id}' Claimed! (+{reward} DIGGO)")
-                except Exception as e:
-                    print(f"[{self.account_name}] Task '{task_id}' claim error: {e}")
-
-        # 2. Telegram Community Task verification
-        tg_task = self.state.get("tasks", {}).get("telegram", {})
-        if tg_task and not tg_task.get("claimed") and tg_task.get("enabled", True):
-            try:
-                v_res = await client.post(f"{BASE_URL}/api/tasks/verify", headers=self._get_headers(), json={"taskId": "telegram"})
-                if v_res.status_code == 200:
-                    c_res = await client.post(f"{BASE_URL}/api/tasks/claim", headers=self._get_headers(idempotency=True), json={"taskId": "telegram"})
-                    if c_res.status_code == 200:
-                        self.state = c_res.json().get("state", self.state)
-                        print(f"[{self.account_name}] Telegram Task Claimed! (+{tg_task.get('reward', 30)} DIGGO)")
-            except Exception:
-                pass
-
-        # 3. Self-Reported Tasks ('x_follow', 'x_post', 'community_react')
-        for task_id, task_info in self.state.get("tasks", {}).items():
             if not task_info or task_info.get("claimed") or not task_info.get("enabled", True):
                 continue
             if task_info.get("verification") != "self_reported":
                 continue
 
             try:
-                print(f"[{self.account_name}] Starting social task '{task_id}'...")
+                print(f"[{self.account_name}] Starting self-reported task '{task_id}'...")
                 r_start = await client.post(f"{BASE_URL}/api/tasks/social/start", headers=self._get_headers(), json={"taskId": task_id})
                 if r_start.status_code == 200:
                     start_data = r_start.json()
@@ -213,10 +215,76 @@ class DiggoClient:
                         if r_claim.status_code == 200:
                             self.state = r_claim.json().get("state", self.state)
                             reward = task_info.get("reward", 5)
-                            print(f"[{self.account_name}] Social Task '{task_id}' Confirmed & Claimed! (+{reward} DIGGO)")
+                            print(f"[{self.account_name}] Self-reported Task '{task_id}' Claimed! (+{reward} DIGGO)")
             except Exception as e:
                 print(f"[{self.account_name}] Error completing task '{task_id}': {e}")
 
+    # --------------------------------------------------------------------------
+    # 5. Tonton Iklan (Adsgram)
+    # --------------------------------------------------------------------------
+    async def claim_watch_ads(self, client: httpx.AsyncClient) -> None:
+        """Simulates watching Adsgram ads up to daily quota limit."""
+        ad_task = self.state.get("tasks", {}).get("ad", {})
+        if not ad_task or ad_task.get("claimed") or not ad_task.get("enabled", True):
+            return
+
+        quota_used = ad_task.get("quotaUsed", 0)
+        quota_total = ad_task.get("quotaTotal", 4)
+        if quota_used >= quota_total:
+            print(f"[{self.account_name}] Kuota iklan harian sudah penuh ({quota_used}/{quota_total}).")
+            return
+
+        remaining_slots = quota_total - quota_used
+        print(f"[{self.account_name}] Memproses tonton iklan ({remaining_slots} slot tersisa)...")
+
+        for slot in range(remaining_slots):
+            try:
+                r_start = await client.post(f"{BASE_URL}/api/adsgram/start", headers=self._get_headers(), json={})
+                if r_start.status_code != 200:
+                    break
+
+                start_res = r_start.json()
+                attempt_id = start_res.get("attemptId")
+                self.state = start_res.get("state", self.state)
+
+                if start_res.get("ready"):
+                    r_claim = await client.post(
+                        f"{BASE_URL}/api/tasks/claim",
+                        headers=self._get_headers(idempotency=True),
+                        json={"taskId": "ad"}
+                    )
+                    if r_claim.status_code == 200:
+                        self.state = r_claim.json().get("state", self.state)
+                        print(f"[{self.account_name}] Iklan #{slot+1} Langsung Diklaim! (+10 DIGGO)")
+                        continue
+
+                if attempt_id and not start_res.get("waiting"):
+                    print(f"[{self.account_name}] Menonton iklan #{slot+1} (5s)...")
+                    await asyncio.sleep(5)
+                    r_comp = await client.post(
+                        f"{BASE_URL}/api/adsgram/complete",
+                        headers=self._get_headers(),
+                        json={"attemptId": attempt_id}
+                    )
+                    if r_comp.status_code == 200:
+                        self.state = r_comp.json().get("state", self.state)
+                        r_claim = await client.post(
+                            f"{BASE_URL}/api/tasks/claim",
+                            headers=self._get_headers(idempotency=True),
+                            json={"taskId": "ad"}
+                        )
+                        if r_claim.status_code == 200:
+                            self.state = r_claim.json().get("state", self.state)
+                            print(f"[{self.account_name}] Iklan #{slot+1} Selesai & Diklaim! (+10 DIGGO)")
+                        else:
+                            print(f"[{self.account_name}] Iklan #{slot+1} Selesai diputar.")
+            except Exception as e:
+                print(f"[{self.account_name}] Error proses iklan #{slot+1}: {e}")
+                break
+
+    # --------------------------------------------------------------------------
+    # 6. Mining Harvest (8-Hour Cycle)
+    # --------------------------------------------------------------------------
     async def claim_mining(self, client: httpx.AsyncClient) -> tuple[bool, int]:
         """
         Claims uncollected mined DIGGO tokens if eligible (8-hour cooldown).
@@ -226,16 +294,15 @@ class DiggoClient:
         next_claim_ms = mining.get("nextClaimAt", 0)
         now_ms = int(time.time() * 1000)
 
-        # Calculate time remaining
         remaining_sec = max(0, int((next_claim_ms - now_ms) / 1000)) if next_claim_ms > 0 else 0
 
         if remaining_sec > 0:
             rem_h = remaining_sec // 3600
             rem_m = (remaining_sec % 3600) // 60
-            print(f"[{self.account_name}] Mining still cooling down: {rem_h}h {rem_m}m remaining (Ready at {datetime.fromtimestamp(next_claim_ms / 1000, tz=timezone.utc).strftime('%H:%M:%S UTC')}).")
+            print(f"[{self.account_name}] Mining cooldown: {rem_h}h {rem_m}m tersisa (Siap pada {datetime.fromtimestamp(next_claim_ms / 1000, tz=timezone.utc).strftime('%H:%M:%S UTC')}).")
             return False, remaining_sec
 
-        print(f"[{self.account_name}] Claiming mining rewards (8-hour cycle)...")
+        print(f"[{self.account_name}] Mengklaim hasil penambangan (siklus 8 jam)...")
         url = f"{BASE_URL}/api/claims/mining"
         try:
             resp = await client.post(url, headers=self._get_headers(idempotency=True), json={})
@@ -245,24 +312,26 @@ class DiggoClient:
                 new_mining = self.state.get("mining", {})
                 new_next_ms = new_mining.get("nextClaimAt", 0)
                 new_remaining = max(0, int((new_next_ms - int(time.time() * 1000)) / 1000))
-                print(f"[{self.account_name}] Mining claimed successfully! Next claim in ~{new_remaining // 3600} hours.")
+                print(f"[{self.account_name}] Mining berhasil diklaim! Siklus berikutnya dalam ~{new_remaining // 3600} jam.")
                 return True, new_remaining
             else:
                 print(f"[{self.account_name}] Mining claim response: {resp.status_code} {resp.text[:100]}")
         except Exception as e:
             print(f"[{self.account_name}] Mining claim error: {e}")
 
-        # Default fallback to 8 hours (28800 sec)
         return False, 28800
 
+    # --------------------------------------------------------------------------
+    # Main Execution Flow per Account
+    # --------------------------------------------------------------------------
     async def execute_account_flow(self) -> dict:
-        """Executes a full check & claim cycle for this account."""
+        """Executes the exact requested task categories."""
         async with httpx.AsyncClient(timeout=25.0, proxy=self.proxy) as client:
             if self.proxy:
                 ip = await self.check_ip(client)
                 print(f"[{self.account_name}] Using Proxy: {self.proxy} (Exit IP: {ip})")
 
-            # 1. Login
+            # Login
             if not await self.login(client):
                 return {
                     "account": self.account_name,
@@ -273,29 +342,37 @@ class DiggoClient:
 
             initial_bal = self.state.get("balance", 0)
             mining_info = self.state.get("mining", {})
-            print(f"[{self.account_name}] Logged In! Balance: {initial_bal} DIGGO | Mining Rate: {mining_info.get('daily', 5)} DIGGO/day")
+            print(f"[{self.account_name}] Logged In! Saldo: {initial_bal} DIGGO | Mining Rate: {mining_info.get('daily', 5)} DIGGO/hari")
 
-            # 2. Daily Check-in
-            if AUTO_DAILY_CHECKIN:
+            # 1. Daily Check-in
+            if TASK_DAILY_CHECKIN:
                 await self.claim_daily_checkin(client)
 
-            # 3. Daily Streak
-            if AUTO_DAILY_STREAK:
+            # 2. Daily Streak
+            if TASK_DAILY_STREAK:
                 await self.claim_daily_streak(client)
 
-            # 4. Tasks (Social, Progress, Community)
-            if AUTO_TASKS:
-                await self.claim_all_available_tasks(client)
+            # 3. Play Game Task
+            if TASK_PLAY_GAME:
+                await self.claim_play_game(client)
 
-            # 5. Mining Claim (8-hour cycle)
+            # 4. Self-Reported Social Tasks (x_follow, x_post, community_react)
+            if TASK_SELF_REPORT_SOCIAL:
+                await self.claim_self_reported_social(client)
+
+            # 5. Tonton Iklan (Adsgram)
+            if TASK_WATCH_ADS:
+                await self.claim_watch_ads(client)
+
+            # 6. Mining Claim (Siklus 8 Jam)
             claimed_mining, next_claim_sec = await self.claim_mining(client)
 
-            # 6. Final State
+            # Final Refresh
             final_state = await self.refresh_state(client)
             final_bal = final_state.get("balance", initial_bal)
             wallet_addr = final_state.get("wallet", {}).get("address") or "None"
 
-            print(f"[{self.account_name}] Final Summary -> Balance: {final_bal} DIGGO | Wallet: {wallet_addr}")
+            print(f"[{self.account_name}] Ringkasan -> Saldo Akhir: {final_bal} DIGGO | Wallet: {wallet_addr}")
 
             return {
                 "account": self.account_name,

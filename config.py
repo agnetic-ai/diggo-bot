@@ -36,11 +36,16 @@ PROXY_LIST = [
 # ==============================================================================
 # 3. Mining & Task Settings
 # ==============================================================================
-MINING_INTERVAL_HOURS = 8  # Siklus klaim mining (default 8 jam)
-AUTO_DAILY_CHECKIN = True  # Auto klaim daily check-in
-AUTO_DAILY_STREAK = True   # Auto klaim streak reward Day 1-7
-AUTO_TASKS = True          # Auto klaim tugas komunitas Telegram & media sosial
-ACCOUNT_DELAY_SECONDS = 3  # Jeda antar akun (detik)
+MINING_INTERVAL_HOURS = 8      # Siklus klaim mining (default 8 jam)
+
+# Task Selection (Hanya 5 Task yang Diminta)
+TASK_DAILY_CHECKIN = True      # 1. Daily Check-in
+TASK_DAILY_STREAK = True       # 2. Daily Streak Day 1-7
+TASK_PLAY_GAME = True          # 3. Play Game
+TASK_SELF_REPORT_SOCIAL = True # 4. Self-report Social (x_follow, x_post, community_react)
+TASK_WATCH_ADS = True          # 5. Tonton Iklan (Adsgram)
+
+ACCOUNT_DELAY_SECONDS = 3      # Jeda antar akun (detik)
 
 
 # ==============================================================================
