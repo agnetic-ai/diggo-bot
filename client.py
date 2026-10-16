@@ -9,13 +9,15 @@ Strictly executes only specified task categories:
 6. 8-Hour Mining Harvest
 """
 
+import os
+import json
 import time
 import uuid
 import asyncio
 import base64
 import httpx
 from datetime import datetime, timezone
-from urllib.parse import parse_qs
+from urllib.parse import parse_qs, unquote
 
 from config import (
     BASE_URL,
@@ -62,8 +64,84 @@ class DiggoClient:
             self.outbound_ip = "Unknown/Direct"
             return self.outbound_ip
 
+    async def try_refresh_init_data(self) -> bool:
+        """
+        Attempts to generate fresh initData on-the-fly from the Telegram session
+        if available in /opt/telegram-multi-account/sessions/
+        """
+        session_dir = "/opt/telegram-multi-account/sessions"
+        if not os.path.exists(session_dir):
+            return False
+
+        session_name = None
+        # 1. Try session_map.json lookup
+        map_path = os.path.join(os.path.dirname(__file__), "session_map.json")
+        if os.path.exists(map_path):
+            try:
+                with open(map_path, "r", encoding="utf-8") as mf:
+                    s_map = json.load(mf)
+                qs = parse_qs(self.init_data)
+                user_str = qs.get("user", [""])[0]
+                if user_str:
+                    user_obj = json.loads(unquote(user_str))
+                    uid = str(user_obj.get("id"))
+                    uname = (user_obj.get("username") or "").lower()
+                    session_name = s_map.get(uid) or s_map.get(uname)
+                if not session_name:
+                    session_name = s_map.get(self.account_name.lower())
+            except Exception:
+                pass
+
+        # 2. Try direct filename candidate match
+        if not session_name:
+            for candidate in [self.account_name, self.account_name.lower()]:
+                if os.path.exists(os.path.join(session_dir, f"{candidate}.session")):
+                    session_name = candidate
+                    break
+
+        if not session_name or session_name == "ombengz":
+            return False
+
+        session_path = os.path.join(session_dir, f"{session_name}.session")
+        if not os.path.exists(session_path):
+            return False
+
+        try:
+            from telethon import TelegramClient, functions
+            from urllib.parse import urlsplit
+
+            api_id = 37429744
+            api_hash = "491629652b9115dfcf86a185a7bc6bc5"
+
+            client = TelegramClient(session_path, api_id, api_hash)
+            await client.connect()
+            if not await client.is_user_authorized():
+                await client.disconnect()
+                return False
+
+            bot = await client.get_entity("Diggominer_bot")
+            input_bot = await client.get_input_entity(bot)
+            res = await client(functions.messages.RequestMainWebViewRequest(
+                peer=input_bot,
+                bot=input_bot,
+                platform="android",
+                start_param="ref_0615dd5877f9bdaa953fc770"
+            ))
+            await client.disconnect()
+
+            frag = urlsplit(res.url).fragment
+            new_init = parse_qs(frag).get("tgWebAppData", [""])[0]
+            if new_init and "hash=" in new_init:
+                self.init_data = new_init
+                print(f"[{self.account_name}] initData otomatis diperbarui via session '{session_name}'! (Fresh auth_date)")
+                return True
+        except Exception as e:
+            print(f"[{self.account_name}] Auto-refresh initData error: {e}")
+
+        return False
+
     async def login(self, client: httpx.AsyncClient) -> bool:
-        """Authenticates with DIGGO backend using initData."""
+        """Authenticates with DIGGO backend using initData, with auto-refresh fallback."""
         url = f"{BASE_URL}/api/auth/telegram"
         payload = {"initData": self.init_data}
 
@@ -75,6 +153,20 @@ class DiggoClient:
                 self.state = data.get("state", {})
                 self.player = self.state.get("player", {})
                 return True
+            elif resp.status_code == 401 and "expired_init_data" in resp.text:
+                print(f"[{self.account_name}] initData expired. Mengambil auth_date fresh via session Telegram...")
+                if await self.try_refresh_init_data():
+                    retry_resp = await client.post(url, headers=self._get_headers(with_auth=False), json={"initData": self.init_data})
+                    if retry_resp.status_code == 200:
+                        data = retry_resp.json()
+                        self.token = data.get("token")
+                        self.state = data.get("state", {})
+                        self.player = self.state.get("player", {})
+                        print(f"[{self.account_name}] Login sukses setelah auto-refresh!")
+                        return True
+                    else:
+                        print(f"[{self.account_name}] Login gagal setelah auto-refresh: HTTP {retry_resp.status_code}")
+                        return False
             else:
                 print(f"[{self.account_name}] Login failed HTTP {resp.status_code}: {resp.text[:150]}")
                 return False
