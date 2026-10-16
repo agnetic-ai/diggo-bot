@@ -24,7 +24,7 @@ DEFAULT_REF = "ref_0615dd5877f9bdaa953fc770"
 # - "tor"   : Menggunakan Tor SOCKS5 lokal dengan stream isolation per akun
 # - "list"  : Menggunakan daftar proxy di PROXY_LIST (rotasi round-robin)
 # - "single": Menggunakan satu proxy tunggal di PROXY_URL
-PROXY_MODE = "none"
+PROXY_MODE = "tor"
 
 PROXY_URL = "socks5://127.0.0.1:9050"
 TOR_PROXY = "socks5://127.0.0.1:9050"
