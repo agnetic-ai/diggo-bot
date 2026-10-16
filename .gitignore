@@ -41,3 +41,4 @@ ENV/
 *.log
 status.json
 accounts.json
+session_map.json
