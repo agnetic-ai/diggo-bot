@@ -22,7 +22,7 @@ case "$ACTION" in
       echo "DIGGO Miner daemon is ALREADY running (PID: $(pgrep -f "$RUNNER.*--loop"))"
       exit 0
     fi
-    nohup "$PYTHON_BIN" "$RUNNER" --loop >> "$LOG_FILE" 2>&1 &
+    PYTHONUNBUFFERED=1 nohup "$PYTHON_BIN" -u "$RUNNER" --loop >> "$LOG_FILE" 2>&1 &
     PID=$!
     echo "DIGGO Miner daemon started in background (PID: $PID)"
     echo "Logs: tail -f $LOG_FILE"
@@ -60,7 +60,7 @@ case "$ACTION" in
     ;;
   once|run)
     shift || true
-    "$PYTHON_BIN" "$RUNNER" --once "$@"
+    PYTHONUNBUFFERED=1 "$PYTHON_BIN" -u "$RUNNER" --once "$@"
     ;;
   loop|daemon)
     shift || true
