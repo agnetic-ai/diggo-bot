@@ -1,31 +1,44 @@
 # DIGGO Miner Bot Automation ⛏️💎
 
-Bot otomasi canggih untuk game penambangan Telegram **DIGGO Miner** (`@Diggominer_bot` / `https://diggo.linkpc.net/`).
+Bot otomasi canggih, tangguh, dan mandiri untuk game penambangan Telegram **DIGGO Miner** (`@Diggominer_bot` / `https://app.diggocoin.com/`).
 
-Dirancang dengan arsitektur mandiri (*standalone*), ringan, mendukung multi-akun, konfigurasi proxy terpusat, dan berjalan nonstop dengan siklus klaim mining otomatis setiap 8 jam.
+Dirancang dengan arsitektur mandiri (*standalone*), ringan, mendukung multi-akun, rotasi IP terisolasi via Tor, penanganan tonton iklan Adsgram lengkap, dan fitur **Auto-Healing Session** (otomatis me-refresh `initData` jika kadaluarsa).
 
 ---
 
 ## 🌟 Fitur Utama
 
-- **Konfigurasi Super Simpel:**
-  - Berkas `.env` **murni hanya berisi string data `user=...&hash=...`** (atau `query_id=...&user=...&hash=...`) tanpa perlu menulis variabel `INIT_DATA=` atau mengatur Base URL.
-  - Untuk multi-akun, cukup tempel string `initData` berikutnya di baris baru.
-- **Otomasi Daily Rewards:**
-  - Klaim otomatis **Daily Check-in** harian (`+10 DIGGO`).
-  - Klaim otomatis **Daily Streak** Day 1 hingga Day 7 (`+15 DIGGO` per hari aktif).
-  - Verifikasi otomatis tugas sosial (Telegram Community `+30 DIGGO`, X Follow `+5`, X Post `+5`).
+- **Konfigurasi Super Simpel (`.env` Murni):**
+  - Berkas `.env` **murni hanya berisi baris string data `user=...&hash=...`** (atau `query_id=...&user=...&hash=...`) tanpa perlu menulis variabel `INIT_DATA=` atau konfigurasi Base URL.
+  - Untuk multi-akun, cukup tempel string `initData` berikutnya di baris baru (1 akun per baris).
+- **Auto-Healing Fresh InitData (Anti-Expired):**
+  - Parameter `auth_date` pada WebApp Telegram memiliki masa berlaku singkat (~10–15 menit).
+  - Jika `initData` di `.env` sudah kadaluarsa (respons HTTP 401 `expired_init_data`), bot secara **otomatis menghubungkan ke berkas `.session` Telethon akun bersangkutan** di `/opt/telegram-multi-account/sessions/`.
+  - Bot meminta token `initData` baru dengan timestamp detik sekarang secara *on-the-fly*, memperbarui sesi, dan langsung melanjutkan login tanpa terhenti!
+- **Otomasi 5 Kategori Task Utama:**
+  1. **Daily Check-in:** Klaim harian otomatis (`+10 DIGGO`).
+  2. **Daily Streak:** Klaim berantai Day 1 s/d Day 7 (`+15 DIGGO` + Energy).
+  3. **Play Game:** Deteksi status leveling dan klaim reward game (`+10 DIGGO`).
+  4. **Self-Reported Social:** Eksekusi otomatis tugas sosial (`x_follow`, `x_post`, `community_react`) dengan simulasi jeda server 15 detik dan konfirmasi `attemptId` (`+15 DIGGO`).
+  5. **Tonton Iklan (Adsgram Engine):**
+     - Emulasi penuh siklus penayangan iklan Adsgram (`blockId: 54249`).
+     - Mengirim request materi iklan ke `https://api.adsgram.ai/adv`.
+     - Menembak tracking pixel `render` dan `show`.
+     - Memutar video iklan dengan timer 16 detik.
+     - Menembak tracking pixel `reward` ke server Adsgram untuk memicu *webhook server-to-server* ke backend DIGGO.
+     - Menyelesaikan kuota harian (4/4 slot) dan mengklaim seluruh reward (`+40 DIGGO`/hari).
 - **Penambangan & Auto-Claim Tiap 8 Jam:**
-  - Membaca telemetri mining secara real-time (Rate per hari, Hashrate TH/s, Energy).
-  - Menghitung waktu tunggu presisi hingga cooldown claim berikutnya (`nextClaimAt`).
-  - Mode Daemon (`--loop`) otomatis tidur dan bangun tepat waktu untuk mengklaim hasil mining setiap 8 jam tanpa intervensi manual.
-- **Dukungan Rotasi Proxy Terpusat (`config.py`):**
-  - `none`: Mode langsung (*direct connection*).
-  - `tor`: Menggunakan Tor SOCKS5 lokal (`127.0.0.1:9050`) dengan **Stream Isolation** otomatis per akun (`socks5://<account>:diggo@127.0.0.1:9050`).
-  - `list`: Rotasi round-robin dari daftar proxy di `PROXY_LIST`.
-  - `single`: Menggunakan satu endpoint proxy HTTP/SOCKS5 di `PROXY_URL`.
+  - Membaca telemetri mining secara real-time (Rate harian, Hashrate TH/s, Energy).
+  - Menghitung waktu tunggu presisi hingga cooldown klaim berikutnya (`nextClaimAt`).
+  - Mode Daemon (`--loop`) otomatis tidur dan bangun tepat waktu untuk mengklaim hasil mining setiap 8 jam.
+- **Rotasi IP Otomatis (Tor Stream Isolation):**
+  - Menggunakan Tor SOCKS5 lokal (`127.0.0.1:9050`) secara default (`PROXY_MODE = "tor"`).
+  - Setiap akun mendapatkan sirkuit dan **Exit IP unik** melalui format autentikasi stream isolation `socks5://<username>:diggo@127.0.0.1:9050`.
+  - Mendukung juga mode proxy kustom: `none`, `list` (round-robin), atau `single`.
 - **CLI Manager Praktis (`diggo.sh`):**
   - Kontrol daemon background (`start`, `stop`, `restart`, `status`, `once`, `log`).
+- **Alat Ekstraksi Massal (`export_all_init_data.py`):**
+  - Skrip otomatis untuk mengekstrak `initData` dari puluhan file session Telegram sekaligus ke dalam file `.env`.
 
 ---
 
@@ -33,15 +46,16 @@ Dirancang dengan arsitektur mandiri (*standalone*), ringan, mendukung multi-akun
 
 ```text
 diggo-bot/
-├── .env                # File akun murni berisi string user=...&hash=... (diabaikan git)
-├── .env.example        # Contoh format pengisian .env
-├── .gitignore          # Proteksi data rahasia & cache
-├── requirements.txt    # Dependensi Python minimal
-├── config.py           # Konfigurasi terpusat (Base URL, Proxy, Timing) & parser .env
-├── client.py           # Engine HTTP API DIGGO (auth, daily, streaks, claims)
-├── runner.py           # Orkestrator & scheduler (mode once & loop 8 jam)
-├── diggo.sh            # CLI shell script untuk manajemen service
-└── README.md           # Dokumentasi lengkap
+├── .env                     # Berkas akun murni berisi string user=...&hash=... (diabaikan git)
+├── .env.example             # Contoh format pengisian .env
+├── .gitignore               # Proteksi kredensial, session, dan file privat
+├── requirements.txt         # Dependensi Python minimal (httpx, telethon, python-dotenv)
+├── config.py                # Konfigurasi terpusat (Base URL, Proxy, Task filters, Parser)
+├── client.py                # Engine API DIGGO & Adsgram (Auth, Auto-refresh, Tasks, Mining)
+├── runner.py                # Orkestrator & scheduler (mode once & loop 8 jam)
+├── diggo.sh                 # CLI shell script manajemen service (start/stop/status/once/log)
+├── export_all_init_data.py  # Skrip pembantu ekstraksi massal dari session Telethon
+└── README.md                # Dokumentasi lengkap berbahasa Indonesia
 ```
 
 ---
@@ -50,86 +64,46 @@ diggo-bot/
 
 - Python 3.10 atau versi lebih baru
 - `pip` atau `uv`
-- Tor Service (opsional, jika ingin mengaktifkan rotasi IP via Tor)
+- Tor Service (sudah aktif di port 9050 untuk rotasi IP)
 
 ---
 
-## 🚀 Panduan Instalasi & Penggunaan
+## 🚀 Panduan Penggunaan di VPS
 
-### 1. Clone Repository & Setup Virtual Environment
-
-```bash
-git clone https://github.com/agnetic-ai/diggo-bot.git
-cd diggo-bot
-
-# Buat virtual environment
-python3 -m venv .venv
-source .venv/bin/activate
-
-# Install dependensi
-pip install -r requirements.txt
-```
-
-### 2. Isi File `.env`
-
-Buat atau salin file `.env`:
+### 1. Masuk ke Direktori Bot
 
 ```bash
-cp .env.example .env
-nano .env
+cd /opt/diggo-miner
 ```
 
-Cukup tempelkan string `user=...&hash=...` langsung di dalam `.env`:
+### 2. Format File `.env`
+
+File `.env` murni hanya berisi satu baris string data per akun:
 
 ```text
-user=%7B%22id%22%3A123456789%2C%22first_name%22%3A%22Budi%22%2C%22username%22%3A%22budi519%22%7D&chat_instance=1234567890&chat_type=sender&auth_date=1728000000&hash=abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890
+user=%7B%22id%22%3A7401736174%2C%22first_name%22%3A%22Baba%22%2C%22username%22%3A%22baba_turbo%22%7D&chat_instance=1234567890&chat_type=sender&auth_date=1728000000&hash=abcdef1234567890...
+user=%7B%22id%22%3A6926143028%2C%22first_name%22%3A%22Rojak%22%2C%22username%22%3A%22rojak038%22%7D&chat_instance=9876543210&chat_type=sender&auth_date=1728000000&hash=123456abcdef...
 ```
 
-> **Untuk Multi-Akun:** Cukup tempel string akun ke-2, ke-3, dst. di baris berikutnya (1 akun per baris). Sistem otomatis membaca semua baris akun dan memberi nama sesuai username masing-masing.
-
-### 3. Pengaturan Proxy & Server (Opsional di `config.py`)
-
-Jika ingin menggunakan proxy Tor atau proxy kustom, cukup buka berkas `config.py`:
-
-```python
-# Ubah PROXY_MODE di config.py:
-PROXY_MODE = "tor"     # Pilihan: "none" | "tor" | "list" | "single"
-PROXY_URL = "socks5://127.0.0.1:9050"
-```
-
----
-
-## 🔍 Cara Mendapatkan String `initData`
-
-1. Buka Telegram Web (`https://web.telegram.org/k/` atau `web.telegram.org/a/`) di browser PC (Chrome / Edge).
-2. Buka bot `@Diggominer_bot` dan luncurkan mini app-nya.
-3. Tekan tombol `F12` untuk membuka Developer Tools, lalu klik tab **Console**.
-4. Ketik perintah berikut lalu tekan Enter:
-   ```javascript
-   Telegram.WebApp.initData
-   ```
-5. Salin string yang dihasilkan (diawali `user=...` atau `query_id=...`), lalu tempel langsung ke file `.env`.
+> **Catatan Auto-Healing:** Anda tidak perlu khawatir jika string `initData` di `.env` sudah berusia lebih dari 15 menit. Selama file `.session` Telethon tersedia di `/opt/telegram-multi-account/sessions/`, bot akan otomatis mendeteksi status `expired_init_data` dan mengambil token baru secara langsung!
 
 ---
 
 ## 🛠️ Perintah CLI (`diggo.sh`)
 
-Script `diggo.sh` memudahkan pengoperasian bot di server VPS:
+Gunakan script `diggo.sh` untuk menjalankan bot:
 
 ```bash
-# Berikan izin eksekusi jika baru clone
-chmod +x diggo.sh runner.py
-
-# 1. Menjalankan 1 siklus langsung di foreground (testing / cek saldo)
+# 1. Menjalankan 1 siklus langsung di foreground (Testing & cek saldo)
 ./diggo.sh once
 
-# 2. Menjalankan bot di background (daemon loop 8 jam nonstop)
+# 2. Menjalankan bot di background (Daemon auto-claim loop 8 jam nonstop)
 ./diggo.sh start
 
-# 3. Memeriksa status proses dan saldo akun terakhir
+# 3. Memeriksa status proses dan ringkasan saldo akun
 ./diggo.sh status
 
-# 4. Memantau log real-time
+# 4. Memantau live log output
 ./diggo.sh log
 
 # 5. Menghentikan bot background
@@ -141,15 +115,26 @@ chmod +x diggo.sh runner.py
 
 ---
 
-## ⚙️ Menjalankan via Systemd Service (Opsional 24/7)
+## 🔄 Alat Ekstraksi Massal Akun (`export_all_init_data.py`)
 
-Jika ingin menjalankan bot sebagai service otomatis saat server booting:
+Jika Anda memiliki banyak file `.session` Telegram dan ingin memperbarui seluruh isi `.env` secara serentak dalam satu perintah:
+
+```bash
+./export_all_init_data.py
+```
+*Skrip akan memindai seluruh sesi di folder session (secara ketat mengabaikan akun utama seperti `ombengz`), mengambil `initData` resmi terbaru, dan menyusunnya rapi di file `.env`.*
+
+---
+
+## ⚙️ Menjalankan sebagai Systemd Service (Opsional 24/7)
+
+Jika ingin bot otomatis berjalan saat VPS baru menyala (*reboot*):
 
 1. Buat file service:
    ```bash
    sudo nano /etc/systemd/system/diggo-miner.service
    ```
-2. Isi konfigurasi berikut:
+2. Salin konfigurasi berikut:
    ```ini
    [Unit]
    Description=DIGGO Miner Automation Daemon
