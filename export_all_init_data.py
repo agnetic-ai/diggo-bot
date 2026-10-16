@@ -78,6 +78,7 @@ async def main():
     print("==================================================")
 
     valid_inits = []
+    session_map = {}
     for f in session_files:
         name = f[:-8]
         if name in EXCLUDED_ACCOUNTS:
@@ -88,6 +89,21 @@ async def main():
         init_data = await fetch_init_data_for_session(full_path, name)
         if init_data:
             valid_inits.append(init_data.strip())
+            try:
+                import json
+                from urllib.parse import unquote
+                qs = parse_qs(init_data)
+                user_str = qs.get("user", [""])[0]
+                if user_str:
+                    u_obj = json.loads(unquote(user_str))
+                    uid = str(u_obj.get("id"))
+                    uname = (u_obj.get("username") or "").lower()
+                    session_map[uid] = name
+                    if uname:
+                        session_map[uname] = name
+                    session_map[name.lower()] = name
+            except Exception:
+                pass
         await asyncio.sleep(1)
 
     print("\n==================================================")
@@ -103,7 +119,12 @@ async def main():
         for item in valid_inits:
             f.write(item + "\n")
 
-    print(f"Successfully saved {len(valid_inits)} accounts into {ENV_PATH}!")
+    # Save local runtime session_map
+    map_path = os.path.join(os.path.dirname(__file__), "session_map.json")
+    with open(map_path, "w", encoding="utf-8") as mf:
+        json.dump(session_map, mf, indent=2)
+
+    print(f"Successfully saved {len(valid_inits)} accounts into {ENV_PATH} and updated session_map.json!")
 
 
 if __name__ == "__main__":
